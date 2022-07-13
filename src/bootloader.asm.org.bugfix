@@ -82,7 +82,7 @@ WRT_CONFIG		equ	_WRT_BOOT
 ;;; Constants and varaiable addresses
 SERIAL_NUMBER_DIGIT_CNT	equ	4
 	ifndef SERIAL_NUMBER
-	variable SERIAL_NUMBER=0	; Why doesnt 'equ' work here? Go figure
+	variable SERIAL_NUMBER=0x0001	; Why doesnt 'equ' work here? Go figure
 	endif
 
 ; I plan to apply for an Openmoko Product ID: the current product ID is temporary.
@@ -189,7 +189,8 @@ _bootloader_interrupt
 	banksel	UIR
 	bcf	UIR,URSTIF	; clear the flag
 ; service transactions
-_utrans	banksel	UIR
+_utrans
+  banksel	UIR
 	btfss	UIR,TRNIF
 	goto	_usdone
 	movfw	USTAT		; stash the status in a temp register
@@ -201,10 +202,12 @@ _utrans	banksel	UIR
 	call	usb_service_ep0	; handle the control message
 	goto	_utrans
 ; clear USB interrupt
-_usdone	banksel	PIR2
+_usdone
+  banksel	PIR2
 	bcf	PIR2,USBIF
 	retfie
-_ucdc	call	usb_service_cdc	; USTAT value is still in FSR1H
+_ucdc
+  call	usb_service_cdc	; USTAT value is still in FSR1H
 	goto	_utrans
 
 
@@ -232,14 +235,14 @@ _loop
 ;;; returns:	none
 ;;; clobbers:	W, FSR1H
 usb_service_ep0
-	btfsc	FSR1H,DIR	; is it an IN transfer or an OUT/SETUP?
+  btfsc	FSR1H,DIR	; is it an IN transfer or an OUT/SETUP?
 	goto	_usb_ctrl_in
 ; it's an OUT or SETUP transfer
 	movfw	BANKED_EP0OUT_STAT
 	andlw	b'00111100'	; isolate PID bits
 	sublw	PID_SETUP	; is it a SETUP packet?
-	bnz	arm_ep0_out	; if not, it's a regular OUT, just rearm the buffer
-	; it's a SETUP packet--fall through
+  bnz	arm_ep0_out	; if not, it's a regular OUT, just rearm the buffer
+; it's a SETUP packet--fall through
 
 ; Handles a SETUP control transfer on endpoint 0.
 ; BSR=0
@@ -270,6 +273,7 @@ _usb_ctrl_setup
 
 ; Finishes a rejected SETUP transaction: the endpoints are stalled
 _usb_ctrl_invalid
+; Descriptor types
 	banksel	UCON
 	bcf	UCON,PKTDIS	; reenable packet processing
 	banksel	BANKED_EP0IN_STAT
@@ -293,10 +297,12 @@ _usb_ctrl_complete
 	goto	_cwrite
 ; this is a control read; prepare the IN endpoint for the data stage
 ; and the OUT endpoint for the status stage
-_cread	call	ep0_read_in		; read data into IN buffer
+_cread
+  call	ep0_read_in		; read data into IN buffer
 	movlw	_DAT1|_DTSEN		; OUT buffer will be ready for status stage
 ; value in W is used to specify the EP0 OUT flags
-_armbfs	call	arm_ep0_out_with_flags
+_armbfs
+  call	arm_ep0_out_with_flags
 	movlw	_DAT1|_DTSEN		; arm IN buffer
 arm_ep0_in_with_flags			; W specifies STAT flags
 	movwf	BANKED_EP0IN_STAT
@@ -304,7 +310,8 @@ arm_ep0_in_with_flags			; W specifies STAT flags
 	return
 ; this is a control write: prepare the IN endpoint for the status stage
 ; and the OUT endpoint for the next SETUP transaction
-_cwrite	bcf	BANKED_EP0IN_STAT,UOWN	; ensure we have ownership of the buffer
+_cwrite
+  bcf	BANKED_EP0IN_STAT,UOWN	; ensure we have ownership of the buffer
 	clrf	BANKED_EP0IN_CNT	; we'll be sending a zero-length packet
 	movlw	_DAT0|_DTSEN|_BSTALL	; make OUT buffer ready for next SETUP packet
 	goto	_armbfs			; arm OUT and IN buffers
@@ -344,6 +351,8 @@ _set_data_in_count_from_w
 	movwf	EP0_DATA_IN_COUNT
 ; the count needs to be set to the minimum of the descriptor's length (in W)
 ; and the requested length
+	tstf	BANKED_EP0OUT_BUF+wLengthH  	; $bigfix$ just ignore high byte...
+	bnz  _usb_ctrl_complete		          ; $bigfix$ if W <= f, no need to adjust
 	subwf	BANKED_EP0OUT_BUF+wLengthL,w	; just ignore high byte...
 	bc	_usb_ctrl_complete		; if W <= f, no need to adjust
 	movfw	BANKED_EP0OUT_BUF+wLengthL
@@ -424,7 +433,8 @@ ep0_read_in
 	ldfsr1d	EP0IN_BUF		; set up destination pointer
 	clrw
 ; byte copy loop
-_bcopy	sublw	EP0_BUF_SIZE		; have we filled the buffer?
+_bcopy
+  sublw	EP0_BUF_SIZE		; have we filled the buffer?
 	bz	_bcdone
 	moviw	FSR0++
 	movwi	FSR1++
@@ -433,28 +443,29 @@ _bcopy	sublw	EP0_BUF_SIZE		; have we filled the buffer?
 	decfsz	EP0_DATA_IN_COUNT,f	; decrement number of bytes remaining
 	goto	_bcopy
 ; write back the updated source pointer
-_bcdone	movfw	FSR0L
+_bcdone
+  movfw	FSR0L
 	movwf	EP0_DATA_IN_PTR
 ; if we're sending the configuration descriptor, we need to inject the app's
 ; values for bus power/self power and max current consumption
-_check_for_config_bmattributes
-	movlw	(low CONFIGURATION_DESCRIPTOR)+EP0_BUF_SIZE
-	subwf	FSR0L,w
-	bnz	_check_for_config_bmaxpower
+;_check_for_config_bmattributes
+;	movlw	(low CONFIGURATION_DESCRIPTOR)+EP0_BUF_SIZE
+;	subwf	FSR0L,w
+;	bnz	_check_for_config_bmaxpower
 ; if we're sending the first 8 bytes of the configuration descriptor,
 ; set bit 6 of bmAttributes if the application is self-powered
-	btfsc	APP_POWER_CONFIG,0
-	bsf	BANKED_EP0IN_BUF+7,6
-	return
-_check_for_config_bmaxpower
-	movlw	(low CONFIGURATION_DESCRIPTOR)+(EP0_BUF_SIZE*2)
-	subwf	FSR0L,w
-	retnz
+;	btfsc	APP_POWER_CONFIG,0
+;	bsf	BANKED_EP0IN_BUF+7,6
+;	return
+;_check_for_config_bmaxpower
+;	movlw	(low CONFIGURATION_DESCRIPTOR)+(EP0_BUF_SIZE*2)
+;	subwf	FSR0L,w
+;	retnz
 ; if we're sending the second 8 bytes of the configuration descriptor,
 ; replace bMaxPower with the app's value
-	movfw	APP_POWER_CONFIG
-	bcf	WREG,0			; value is in the upper 7 bits
-	movwf	BANKED_EP0IN_BUF+0
+;	movfw	APP_POWER_CONFIG
+;	bcf	WREG,0			; value is in the upper 7 bits
+;	movwf	BANKED_EP0IN_BUF+0
 	return
 
 
@@ -514,6 +525,8 @@ arm_ep1_out
 ;;; returns:	status code in W
 ;;; clobbers:	W, BSR, FSR0, FSR1
 bootloader_exec_cmd
+	retlw	BSTAT_INVALID_COMMAND
+  if 0
 ; check length of data packet
 	movlw	BCMD_SET_PARAMS_LEN
 	subwf	BANKED_EP1OUT_CNT,w
@@ -587,7 +600,8 @@ _bootloader_write
 ; write latches
 	movlw	32			; number of words to write minus 1
 	movwf	FSR1H			; used for loop count
-_wloop	moviw	FSR0++			; load lower byte
+_wloop
+  moviw	FSR0++			; load lower byte
 	addwf	FSR1L,f			; add lower byte to checksum
 	movwf	PMDATL			; copy to write latch
 	moviw	FSR0++			; load upper byte
@@ -602,7 +616,8 @@ _wloop	moviw	FSR0++			; load lower byte
 	incf	PMADRL,f		; increment write address
 	goto	_wloop
 ; verify the checksum
-_wcksum	clrf	PMCON1
+_wcksum
+  clrf	PMCON1
 	tstf	FSR1L
 	skpz
 	retlw	BSTAT_INVALID_CHECKSUM	; if there's a mismatch, abort the write
@@ -616,11 +631,13 @@ _wcksum	clrf	PMCON1
 ; is pointing to one byte past the end of the buffer)
 	clrf	PMCON1			; clear write enable
 	bsf	FSR1H,5			; set loop count to 32 (just need to set one bit because it's already 0)
-_vloop	bsf	PMCON1,RD		; read word from flash
+_vloop
+  bsf	PMCON1,RD		; read word from flash
 	nop				; 2 required nops
 	nop
 	moviw	--FSR0			; get high byte of expected word
 	subwf	PMDATH,w		; compare with high byte written to flash
+  andlw 0x3F        ; $bigfix$
 	skpz
 	retlw	BSTAT_VERIFY_FAILED
 	moviw	--FSR0			; get low byte of expected word
@@ -646,8 +663,9 @@ flash_unlock
 	bsf	PMCON1,WR
 	nop
 	nop
-ret	return
-
+endif
+ret
+  return
 
 
 ;;; Main function
@@ -658,10 +676,20 @@ bootloader_start
 	movwf	OSCCON
 
 ; Wait for the oscillator and PLL to stabilize
-_wosc	movlw	(1<<PLLRDY)|(1<<HFIOFR)|(1<<HFIOFS)
+_wosc
+  movlw	(1<<PLLRDY)|(1<<HFIOFR)|(1<<HFIOFS)
 	andwf	OSCSTAT,w
 	sublw	(1<<PLLRDY)|(1<<HFIOFR)|(1<<HFIOFS)
 	bnz	_wosc
+
+; Check for Bootloader Mode (Software Reset with FSR1L=0xDF and FSR0L=0xBE)
+  movfw FSR1L
+  sublw 0xDF
+  bnz   _check_app_entry
+  movfw FSR0L
+  sublw 0xBE
+  bz   _bootloader_main
+_check_app_entry
 
 ; Check for valid application code: the lower 8 bits of the first word cannot be 0xFF
 	call	app_is_present
@@ -671,7 +699,6 @@ _wosc	movlw	(1<<PLLRDY)|(1<<HFIOFR)|(1<<HFIOFS)
 	banksel	PORTA
 	btfss	PORTA,RA3
 	goto	_bootloader_main	; enter bootloader mode if input is low
-
 ; We have a valid application and the entry pin is high. Start the application.
 	banksel	OPTION_REG
 	bsf	OPTION_REG,NOT_WPUEN	; but first, disable weak pullups
@@ -706,7 +733,8 @@ _usb_attach
 	bsf	PIE2,USBIE	; enable USB interrupts
 	bsf	INTCON,PEIE
 	banksel	UCON
-_usben	bsf	UCON,USBEN	; enable USB module and wait until ready
+_usben
+  bsf	UCON,USBEN	; enable USB module and wait until ready
 	btfss	UCON,USBEN
 	goto	_usben
 	logch	'!',LOG_NEWLINE
@@ -726,7 +754,7 @@ app_is_present
 	clrf	FSR0L
 	movlw	(high APP_ENTRY_POINT)|0x80	; need to set high bit to indicate program memory
 	movwf	FSR0H
-	moviw	FSR0
+	moviw [FSR0]
 	incw				; if W was 0xFF, it'll be 0 now
 	return				; Z flag will be unset if app code is present
 
@@ -736,20 +764,20 @@ app_is_present
 ;;; arguments:	none
 ;;; returns:	none
 ;;; clobbers:	W, BSR, FSR0
-get_app_power_config
-	banksel	APP_POWER_CONFIG
-	movlw	0x33			; default value: bus-powered, max current 100 mA
-	movwf	APP_POWER_CONFIG
-	call	app_is_present
-	retz				; if Z flag is set, we have no application, just return
-	if LOGGING_ENABLED
-	pagesel	APP_CONFIG
-	endif
-	call	APP_CONFIG		; config value returned in W
-	pagesel	get_app_power_config
-	banksel	APP_POWER_CONFIG
-	movwf	APP_POWER_CONFIG
-	return
+;get_app_power_config
+;	banksel	APP_POWER_CONFIG
+;	movlw	0x33			; default value: bus-powered, max current 100 mA
+;	movwf	APP_POWER_CONFIG
+;	call	app_is_present
+;	retz				; if Z flag is set, we have no application, just return
+;	if LOGGING_ENABLED
+;	pagesel	APP_CONFIG
+;	endif
+;	call	APP_CONFIG		; config value returned in W
+;	pagesel	get_app_power_config
+;	banksel	APP_POWER_CONFIG
+;	movwf	APP_POWER_CONFIG
+;	return
 
 
 
@@ -785,11 +813,12 @@ usb_init
 	movlw	USED_RAM_LEN
 	movwf	FSR1H		; loop count
 	movlw	0
-_ramclr	movwi	FSR0++
+_ramclr
+  movwi	FSR0++
 	decfsz	FSR1H,f
 	goto	_ramclr
 ; get the app's power configuration (if it's present)
-	call	get_app_power_config
+;	call	get_app_power_config
 ; reset ping-pong buffers and address
 	banksel	UCON
 	bsf	UCON,PPBRST
@@ -797,7 +826,8 @@ _ramclr	movwi	FSR0++
 	bcf	UCON,PKTDIS	; enable packet processing
 	bcf	UCON,PPBRST	; clear ping-pong buffer reset flag
 ; flush pending transactions
-_tflush	btfss	UIR,TRNIF
+_tflush
+  btfss	UIR,TRNIF
 	goto	_initep
 	bcf	UIR,TRNIF
 	call	ret		; need at least 6 cycles before checking TRNIF again
@@ -809,7 +839,8 @@ _tflush	btfss	UIR,TRNIF
 ; my intuition was that I should wait until a SET_CONFIGURATION is received
 ; before setting up endpoints 1 and 2... but there seemed to be a timing issue
 ; when doing so, so I moved them here
-_initep	movlw	(1<<EPHSHK)|(1<<EPOUTEN)|(1<<EPINEN)
+_initep
+  movlw	(1<<EPHSHK)|(1<<EPOUTEN)|(1<<EPINEN)
 	movwf	UEP0
 	movlw	(1<<EPHSHK)|(1<<EPCONDIS)|(1<<EPOUTEN)|(1<<EPINEN)
 	movwf	UEP1
@@ -873,7 +904,7 @@ CONFIGURATION_DESCRIPTOR
 	dt	0x01		; bConfigurationValue
 	dt	0x00		; iConfiguration
 	dt	0x80		; bmAttributes
-	dt	0x11		; bMaxPower
+	dt	0x33		; bMaxPower
 
 INTERFACE_DESCRIPTOR_0
 	dt	0x09		; bLength
@@ -915,7 +946,7 @@ CALL_MANAGEMENT_FUNCTIONAL_DESCRIPTOR
 	dt	0x05		; bFunctionLength
 	dt	0x24		; bDescriptorType (CS_INTERFACE)
 	dt	0x01		; bDescriptorSubtype (call management functional descriptor)
-	dt	0x00		; bmCapabilities (doesn't handle call management)
+	dt	0x01		; bmCapabilities (doesn't handle call management)
 	dt	0x01		; dDataInterface
 
 ENDPOINT_DESCRIPTOR_2_IN
